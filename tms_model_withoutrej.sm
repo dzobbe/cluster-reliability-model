@@ -1,0 +1,145 @@
+ctmc
+
+// constants
+const double T; // time bound
+const int MIN_NODES = 1;
+const int NUM_ACTIVE_NODES;
+const int NUM_STANDBY_NODES;
+
+
+// rates
+const double lambda_crm = 1/(183*24*60*60); // 1/2 year
+const double lambda_s = 0.000067 / 3600; // 6.7 * 10^(-5)
+const double lambda_a = 0.000067 / 3600;  // 6.7 * 10^(-5)
+const double theta = 1; // 30 secs | 1/Time To switch
+const double mu = 1/43200; // 12 Hrs  | 1/Time to repair
+const double mu_crm = 1/300; // 300 secs | 1/Time to repair CRM
+
+
+
+
+// Cluster Resource Manager (CRM)
+// (takes info from nodes and passes to the CRM)
+module crm
+	i : [0..1] init 1; // 1=CRM working - 0=CRM failed
+	[crm_failure] i=1 & (a_s>=MIN_NODES | s_s>=MIN_NODES) -> lambda_crm : (i'=0); // failure of CRM
+	[crm_recovery] i=0 -> mu_crm : (i'=1); // failure of CRM
+endmodule
+ 
+
+//Active Nodes
+module active_nodes
+	a_s  : [0..NUM_ACTIVE_NODES] init NUM_ACTIVE_NODES; // number of active nodes working
+
+	[] a_s>1 -> a_s*lambda_a : (a_s'=a_s-1); // failure of a active node
+	[active_failure] a_s=1 -> lambda_a : (a_s'=a_s-1); // failure of a active node
+	[active_repair] a_s<NUM_ACTIVE_NODES -> mu : (a_s'=a_s+1); // recovery of a active node
+endmodule
+
+//Standby Nodes
+module standby_nodes
+
+	s_s : [0..NUM_STANDBY_NODES] init NUM_STANDBY_NODES; // number of standby nodes working
+
+	[] s_s>1 -> s_s*lambda_s : (s_s'=s_s-1); // failure of a standby node
+	[standby_failure] s_s=1 -> lambda_s : (s_s'=s_s-1); // failure of a standby node
+	[standby_repair] s_s<NUM_STANDBY_NODES -> mu : (s_s'=s_s+1); // recovery of a standby node
+endmodule
+
+
+// State 8: State needed to take into account the failover operation
+// State 7: AN=up SN=up CRM=up
+// State 6: AN=dw SN=up CRM=up
+// State 5: AN=dw SN=dw CRM=up
+// State 4: AN=dw SN=dw CRM=dw 
+// State 3: AN=dw SN=up CRM=dw
+// State 2: AN=up SN=up CRM=dw
+// State 1: AN=up SN=dw CRM=dw
+// State 0: AN=up SN=dw CRM=up
+module cluster
+	c_s: [0..8] init 7;
+
+
+	[active_failure]c_s=7 -> 1:(c_s'=6);  
+	[active_failure]c_s=0 -> 1:(c_s'=5);
+	[active_failure]c_s=1 -> 1:(c_s'=4);
+	[active_failure]c_s=2 -> 1:(c_s'=3);
+
+	[standby_failure]c_s=8 -> 1:(c_s'=5);	
+	[standby_failure]c_s=7 -> 1:(c_s'=0);
+	[standby_failure]c_s=3 -> 1:(c_s'=4);
+	[standby_failure]c_s=2 -> 1:(c_s'=1);
+
+	[crm_failure]c_s=5 -> 1:(c_s'=4);
+	[crm_failure]c_s=0 -> 1:(c_s'=1);	
+	[crm_failure]c_s=8 -> 1:(c_s'=3);
+	[crm_failure]c_s=7 -> 1:(c_s'=2);
+
+	[active_repair]c_s=8 -> 1:(c_s'=7);
+	[active_repair] c_s=5 -> 1:(c_s'=0);
+	[active_repair]c_s=4 -> 1:(c_s'=1);
+	[active_repair]c_s=3 -> 1:(c_s'=2);
+
+	[standby_repair]c_s=0 -> 1:(c_s'=7);
+	[standby_repair]c_s=5 -> 1:(c_s'=8);
+	[standby_repair]c_s=4 -> 1:(c_s'=3);
+	[standby_repair]c_s=1 -> 1:(c_s'=2);
+
+	[crm_repair]c_s=2 -> 1:(c_s'=7);
+	[crm_repair] c_s=3 -> 1:(c_s'=8);
+	[crm_repair] c_s=4 -> 1:(c_s'=5);
+	[crm_repair]c_s=1 -> 1:(c_s'=0);
+
+
+	[]c_s=6 -> theta:(c_s'=8);
+endmodule
+
+ 
+// The cluster is down
+formula down = (c_s=6)|(c_s=5)|(c_s=4)|(c_s=3);
+// A failure has occured but the cluster is not down
+formula danger = (c_s=1)|(c_s=0)|(c_s=2);
+// the cluster is operational
+formula up = (c_s=1)|(c_s=0)|(c_s=2)|(c_s=8)|(c_s=7);
+
+// reward structures
+rewards "up"
+	up : 1/(24*3600);
+endrewards
+
+rewards "danger"
+	danger : 1/(24*3600);
+endrewards
+
+rewards "down"
+	down : 1/(24*3600);
+endrewards
+
+// Number of repairs
+rewards "num_failures"
+	[active_failure]  true : 1;
+endrewards
+
+formula fail_crm = (c_s=4)|(c_s=3)|(c_s=2)|(c_s=1); // failure of crm
+formula fail_active = (c_s=4)|(c_s=3)|(c_s=5)|(c_s=6); // failure of active node
+formula fail_standby = (c_s=4)|(c_s=5)|(c_s=1)|(c_s=0); // failure of both crm and active node
+formula fail_crm_active = (c_s=4)|(c_s=3); // failure of both crm and active node
+formula fail_active_standby = (c_s=4)|(c_s=5); // failure of active and standby node
+
+
+formula up_ = (c_s=1)|(c_s=0)|(c_s=2)|(c_s=8)|(c_s=7);
+formula down_ = (c_s=6)|(c_s=5)|(c_s=4)|(c_s=3);
+
+// The cluster is down
+label "down" = (c_s=6)|(c_s=5)|(c_s=4)|(c_s=3);
+// A failure has occured but the cluster is not down
+label "danger" = (c_s=1)|(c_s=0)|(c_s=2);
+// the cluster is operational
+label "up" = (c_s=1)|(c_s=0)|(c_s=2)|(c_s=8)|(c_s=7);
+
+
+label "fail_crm" = (c_s=4)|(c_s=3)|(c_s=2)|(c_s=1); // failure of crm
+label "fail_active" =  (c_s=4)|(c_s=3)|(c_s=5)|(c_s=6); // failure of active node
+label "fail_standby" = (c_s=4)|(c_s=5)|(c_s=1)|(c_s=0); // failure of both crm and active node
+label "fail_crm_active" = (c_s=4)|(c_s=3); // failure of both crm and active node
+label "fail_active_standby" =(c_s=4)|(c_s=5); // failure of active and standby node
